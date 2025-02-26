@@ -1,23 +1,87 @@
 import sys
 import os
 import time
-from datetime import datetime
+import mmap
+import datetime
+from datetime import datetime as dt
+from pathlib import Path
+import multiprocessing as mp
+from typing import List, Tuple
 
 #Validate my input date to check whether the format is obeyed or not
 def validate_date_format(date_str):
     print("Collecting data...")
     try:
-        datetime.strptime(date_str, '%Y-%m-%d')
+        dt.strptime(date_str, '%Y-%m-%d')
     except ValueError:
         raise ValueError(f"Incorrect date format: '{date_str}'. Expected format: YYYY-MM-DD")
 
-#Function to extract logs from th log file
-def extract_logs(date_str, input_file_path, output_file_path):
-    os.makedirs(os.path.dirname(output_file_path) or ".", exist_ok=True) 
+def find_date_boundaries(mm: mmap.mmap, file_size: int) -> Tuple[str, str]:
+    mm.seek(0)
+    first_line = mm.readline().decode('utf-8', errors='ignore').strip()
+    first_date = first_line[:10] if len(first_line) >= 10 else "0000-00-00"
     
-    with open(input_file_path, 'r') as infile, open(output_file_path, 'w') as outfile:
-        matched_lines = [line for line in infile if line.startswith(date_str)]
-        outfile.writelines(matched_lines)  
+    pos = max(0, file_size - 100000)  
+    mm.seek(pos)
+    mm.readline() 
+    last_date = "9999-99-99"
+    for _ in range(100):
+        line = mm.readline().decode('utf-8', errors='ignore').strip()
+        if not line:
+            break
+        if len(line) >= 10 and line[4] == '-' and line[7] == '-':
+            last_date = line[:10]
+    return first_date, last_date
+
+def find_lines_for_date(chunk: Tuple[int, int], file_path: str, target_date: str) -> List[str]:
+    results = []
+    start, end = chunk
+    with open(file_path, 'rb') as f:
+        f.seek(start)
+        if start > 0:
+            f.readline()
+        current_pos = f.tell()
+        while current_pos < end:
+            try:
+                line = f.readline().decode('utf-8', errors='ignore').strip()
+                current_pos = f.tell()
+                if line.startswith(target_date):
+                    results.append(line)
+            except Exception:
+                current_pos = f.tell()
+    return results
+
+
+#Function to extract logs from the log file
+def extract_logs(date_str, input_file_path, output_file_path,
+                              num_processes: int = 4):
+    file_size = os.path.getsize(input_file_path)
+    with open(input_file_path, 'rb') as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        min_date, max_date = find_date_boundaries(mm, file_size)
+        mm.close()
+    
+    # Spliting the file into nearly equal chunks.
+    chunk_size = file_size // num_processes
+    chunks = []
+    for i in range(num_processes):
+        start = i * chunk_size
+        end = file_size if i == num_processes - 1 else (i + 1) * chunk_size
+        chunks.append((start, end))
+    
+    pool = mp.Pool(processes=num_processes)
+    results = pool.starmap(find_lines_for_date, [(chunk, input_file_path, date_str) for chunk in chunks])
+    pool.close()
+    pool.join()
+    
+    # Flattening and sorting the results.
+    extracted_lines = [line for sublist in results for line in sublist]
+    extracted_lines.sort()
+    
+    os.makedirs(os.path.dirname(output_file_path) or ".", exist_ok=True)
+    with open(output_file_path, 'w', encoding='utf-8') as outfile:
+        for line in extracted_lines:
+            outfile.write(line + "\n")
 
 def main():
     #Checking if we are running the file in command line or not
