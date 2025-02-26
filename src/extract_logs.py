@@ -33,8 +33,8 @@ def main():
         print(ve)
         sys.exit(1)
     
-    input_file_path = 'logs_2024.log'  
-    output_file_path = f"output/output_{date_str}.txt"
+    input_file_path = '../logs_2024.log'  
+    output_file_path = f"../output/output_{date_str}.txt"
     
     start_time = time.time()
     
